@@ -1,11 +1,10 @@
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Configuration;
+using Microsoft.OpenApi;
 using Soenneker.Extensions.String;
 using Soenneker.Git.Util.Abstract;
 using Soenneker.Bunny.Runners.OpenApiClient.Utils.Abstract;
 using Soenneker.Utils.Dotnet.Abstract;
 using Soenneker.Utils.Environment;
-using Soenneker.Utils.Process.Abstract;
 using System;
 using System.IO;
 using System.Linq;
@@ -14,6 +13,7 @@ using System.Threading.Tasks;
 using Soenneker.Extensions.ValueTask;
 using Soenneker.Kiota.Util.Abstract;
 using Soenneker.OpenApi.Fixer.Abstract;
+using Soenneker.OpenApi.Merger.Abstract;
 using Soenneker.Utils.Directory.Abstract;
 using Soenneker.Utils.File.Abstract;
 using Soenneker.Utils.File.Download.Abstract;
@@ -24,24 +24,36 @@ namespace Soenneker.Bunny.Runners.OpenApiClient.Utils;
 ///<inheritdoc cref="IFileOperationsUtil"/>
 public sealed class FileOperationsUtil : IFileOperationsUtil
 {
+    private static readonly (string Prefix, string Url)[] _openApiDocuments =
+    [
+        ("core", "https://core-api-public-docs.b-cdn.net/docs/v3/public.json"),
+        ("origin-errors", "https://docs.bunny.net/api-reference/origin-errors/openapi.json"),
+        ("cdn-logging", "https://logging.bunnycdn.com/docs/all/swagger.json"),
+        ("storage", "https://docs.bunny.net/api-reference/storage/openapi.json"),
+        ("stream", "https://video.bunnycdn.com/openapi/bunnynet-video-api.public.json"),
+        ("shield", "https://api.bunny.net/shield/docs/v1/swagger.json"),
+        ("edge-scripting", "https://core-api-public-docs.b-cdn.net/docs/v3/compute.json"),
+        ("magic-containers", "https://api-mc.opsbunny.net/docs/public/swagger.json")
+    ];
+
     private readonly ILogger<FileOperationsUtil> _logger;
-    private readonly IConfiguration _configuration;
     private readonly IGitUtil _gitUtil;
     private readonly IDotnetUtil _dotnetUtil;
     private readonly IKiotaUtil _kiotaUtil;
+    private readonly IOpenApiMerger _openApiMerger;
     private readonly IOpenApiFixer _openApiFixer;
     private readonly IFileDownloadUtil _fileDownloadUtil;
     private readonly IFileUtil _fileUtil;
     private readonly IDirectoryUtil _directoryUtil;
 
-    public FileOperationsUtil(ILogger<FileOperationsUtil> logger, IConfiguration configuration, IGitUtil gitUtil, IDotnetUtil dotnetUtil,
-        IFileDownloadUtil fileDownloadUtil, IFileUtil fileUtil, IDirectoryUtil directoryUtil, IKiotaUtil kiotaUtil, IOpenApiFixer openApiFixer)
+    public FileOperationsUtil(ILogger<FileOperationsUtil> logger, IGitUtil gitUtil, IDotnetUtil dotnetUtil, IFileDownloadUtil fileDownloadUtil,
+        IFileUtil fileUtil, IDirectoryUtil directoryUtil, IOpenApiMerger openApiMerger, IKiotaUtil kiotaUtil, IOpenApiFixer openApiFixer)
     {
         _logger = logger;
-        _configuration = configuration;
         _gitUtil = gitUtil;
         _dotnetUtil = dotnetUtil;
         _kiotaUtil = kiotaUtil;
+        _openApiMerger = openApiMerger;
         _openApiFixer = openApiFixer;
         _fileDownloadUtil = fileDownloadUtil;
         _fileUtil = fileUtil;
@@ -56,17 +68,31 @@ public sealed class FileOperationsUtil : IFileOperationsUtil
 
         await _fileUtil.DeleteIfExists(targetFilePath, cancellationToken: cancellationToken);
 
-        string openApiDocumentUrl = _configuration["Bunny:ClientGenerationUrl"] ?? "https://core-api-public-docs.b-cdn.net/docs/v3/public.json";
+        string specsDirectory = await _directoryUtil.CreateTempDirectory(cancellationToken);
+        var mergeInputs = new List<(string prefix, string filePath)>(_openApiDocuments.Length);
 
-        string? filePath = await _fileDownloadUtil.Download(openApiDocumentUrl,
-            targetFilePath, fileExtension: ".json", cancellationToken: cancellationToken);
+        foreach ((string prefix, string url) in _openApiDocuments)
+        {
+            string sourceFilePath = Path.Combine(specsDirectory, $"{prefix}.json");
 
-        if (filePath == null)
-            throw new InvalidOperationException("Bunny OpenAPI document download failed.");
+            string? downloadedFilePath = await _fileDownloadUtil.Download(url, sourceFilePath, fileExtension: ".json", cancellationToken: cancellationToken);
+
+            if (downloadedFilePath == null)
+                throw new InvalidOperationException($"Bunny OpenAPI document download failed: {url}");
+
+            mergeInputs.Add((prefix, downloadedFilePath));
+        }
+
+        _logger.LogInformation("Downloaded {Count} Bunny OpenAPI documents. Merging...", mergeInputs.Count);
+
+        OpenApiDocument mergedOpenApiDocument = await _openApiMerger.MergeOpenApis(mergeInputs, cancellationToken).NoSync();
+        string mergedOpenApiJson = _openApiMerger.ToJson(mergedOpenApiDocument);
+
+        await _fileUtil.Write(targetFilePath, mergedOpenApiJson, true, cancellationToken);
 
         string fixedFilePath = Path.Combine(gitDirectory, "openapi.fixed.json");
         await _fileUtil.DeleteIfExists(fixedFilePath, cancellationToken: cancellationToken);
-        await _openApiFixer.Fix(filePath, fixedFilePath, cancellationToken).NoSync();
+        await _openApiFixer.Fix(targetFilePath, fixedFilePath, cancellationToken).NoSync();
 
         await _kiotaUtil.EnsureInstalled(cancellationToken);
 

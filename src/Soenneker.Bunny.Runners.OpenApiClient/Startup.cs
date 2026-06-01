@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Soenneker.Kiota.Util.Registrars;
 using Soenneker.Managers.Runners.Registrars;
 using Soenneker.OpenApi.Fixer.Registrars;
+using Soenneker.OpenApi.Merger.Registrars;
 using Soenneker.Bunny.Runners.OpenApiClient.Utils;
 using Soenneker.Bunny.Runners.OpenApiClient.Utils.Abstract;
 using Soenneker.Utils.File.Download.Registrars;
@@ -25,6 +26,7 @@ public static class Startup
                 .AddSingleton<IFileOperationsUtil, FileOperationsUtil>()
                 .AddRunnersManagerAsSingleton()
                 .AddFileDownloadUtilAsSingleton()
+                .AddOpenApiMergerAsSingleton()
                 .AddOpenApiFixerAsSingleton()
                 .AddKiotaUtilAsSingleton();
 
