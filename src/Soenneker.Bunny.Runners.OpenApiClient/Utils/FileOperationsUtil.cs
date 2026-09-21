@@ -80,6 +80,7 @@ public sealed class FileOperationsUtil : IFileOperationsUtil
             if (downloadedFilePath == null)
                 throw new InvalidOperationException($"Bunny OpenAPI document download failed: {url}");
 
+            await _openApiFixer.Fix(downloadedFilePath, downloadedFilePath, cancellationToken).NoSync();
             mergeInputs.Add((prefix, downloadedFilePath));
         }
 
